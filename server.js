@@ -14,46 +14,161 @@ const io = new Server(server, {
   }
 });
 
-const players = {};
+let waitingPlayer = null;
+
+const rooms = {};
 
 io.on("connection", (socket) => {
 
-  console.log("Player joined:", socket.id);
+  console.log("Player connected:", socket.id);
 
-  players[socket.id] = {
+  // PLAYER DATA
+  socket.playerData = {
     x: 0,
     y: 1.7,
     z: 0,
-    rotationY: 0
+    yaw: 0,
+    pitch: 0,
+    hp: 100,
+    shield: 100
   };
 
-  socket.emit("currentPlayers", players);
+  // ─────────────────────────────
+  // MATCHMAKING
+  // ─────────────────────────────
 
-  socket.broadcast.emit("newPlayer", {
-    id: socket.id,
-    player: players[socket.id]
+  if (waitingPlayer === null) {
+
+    waitingPlayer = socket;
+
+    socket.emit("pvp:waiting");
+
+  } else {
+
+    const roomId = "room_" + waitingPlayer.id + "_" + socket.id;
+
+    rooms[roomId] = {
+      players: [waitingPlayer.id, socket.id]
+    };
+
+    waitingPlayer.join(roomId);
+    socket.join(roomId);
+
+    waitingPlayer.roomId = roomId;
+    socket.roomId = roomId;
+
+    // SEND PLAYER INFO
+    waitingPlayer.emit("pvp:opponentJoined", {
+      id: socket.id,
+      player: socket.playerData
+    });
+
+    socket.emit("pvp:opponentJoined", {
+      id: waitingPlayer.id,
+      player: waitingPlayer.playerData
+    });
+
+    // START MATCH
+    io.to(roomId).emit("pvp:start");
+
+    waitingPlayer = null;
+  }
+
+  // ─────────────────────────────
+  // MOVEMENT
+  // ─────────────────────────────
+
+  socket.on("pvp:move", (data) => {
+
+    socket.playerData = {
+      ...socket.playerData,
+      ...data
+    };
+
+    socket.to(socket.roomId).emit("pvp:opponentMoved", {
+      id: socket.id,
+      ...data
+    });
+
   });
 
-  socket.on("move", (data) => {
+  // ─────────────────────────────
+  // DAMAGE
+  // ─────────────────────────────
 
-    if (players[socket.id]) {
+  socket.on("pvp:hit", ({ targetId, damage, headshot }) => {
 
-      players[socket.id] = data;
+    const target = io.sockets.sockets.get(targetId);
 
-      socket.broadcast.emit("playerMoved", {
-        id: socket.id,
-        player: data
-      });
+    if (!target) return;
+
+    let remainingDamage = damage;
+
+    // DAMAGE SHIELD FIRST
+    if (target.playerData.shield > 0) {
+
+      const shieldDamage = Math.min(
+        target.playerData.shield,
+        remainingDamage
+      );
+
+      target.playerData.shield -= shieldDamage;
+
+      remainingDamage -= shieldDamage;
     }
+
+    // DAMAGE HP
+    if (remainingDamage > 0) {
+
+      target.playerData.hp -= remainingDamage;
+
+    }
+
+    // SEND DAMAGE TO TARGET
+    target.emit("pvp:hit", {
+      shooterId: socket.id,
+      damage,
+      headshot,
+      hp: target.playerData.hp,
+      shield: target.playerData.shield
+    });
+
+    // CONFIRM HIT TO SHOOTER
+    socket.emit("pvp:hitConfirm", {
+      targetId,
+      damage,
+      headshot,
+      hp: target.playerData.hp
+    });
+
+    // PLAYER DIED
+    if (target.playerData.hp <= 0) {
+
+      io.to(socket.roomId).emit("pvp:playerDied", {
+        deadId: target.id,
+        killerId: socket.id
+      });
+
+    }
+
   });
+
+  // ─────────────────────────────
+  // DISCONNECT
+  // ─────────────────────────────
 
   socket.on("disconnect", () => {
 
-    console.log("Player left:", socket.id);
+    console.log("Disconnected:", socket.id);
 
-    delete players[socket.id];
+    if (waitingPlayer === socket) {
+      waitingPlayer = null;
+    }
 
-    io.emit("playerDisconnected", socket.id);
+    socket.to(socket.roomId).emit("pvp:opponentLeft", {
+      id: socket.id
+    });
+
   });
 
 });
