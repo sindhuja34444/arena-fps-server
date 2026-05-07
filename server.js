@@ -174,6 +174,15 @@ io.on("connection", (socket) => {
   });
 
   // ─────────────────────────────────────────────
+  // ZONE CAPTURE (relay to opponent)
+  // ─────────────────────────────────────────────
+
+  socket.on("pvp:zoneCaptured", (data) => {
+    if (!socket.roomId) return;
+    socket.to(socket.roomId).emit("pvp:zoneCaptured", data);
+  });
+
+  // ─────────────────────────────────────────────
   // DAMAGE
   // ─────────────────────────────────────────────
 
@@ -231,7 +240,8 @@ io.on("connection", (socket) => {
       targetId,
       damage,
       headshot,
-      hp: target.playerData.hp
+      hp: target.playerData.hp,
+      shield: target.playerData.shield
     });
 
     // PLAYER DEAD
